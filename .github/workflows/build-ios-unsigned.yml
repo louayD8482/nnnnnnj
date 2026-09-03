@@ -8,50 +8,164 @@ on:
 
 jobs:
   build-ios:
+    name: Build iOS
     runs-on: macos-latest
 
     steps:
+
+      # 1. تحميل المشروع
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2. تثبيت Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
+      # 3. تثبيت مكتبات المشروع
       - name: Install dependencies
-        run: npm install --legacy-peer-deps --package-lock=false
+        run: |
+          npm install --legacy-peer-deps --package-lock=false
 
-      - name: Build web app
-        run: npm run build
-
+      # 4. تثبيت Capacitor
       - name: Install Capacitor
         run: |
-          npm install @capacitor/core @capacitor/cli @capacitor/ios
+          npm install @capacitor/core @capacitor/cli @capacitor/ios --legacy-peer-deps
 
+      # 5. بناء نسخة الويب
+      - name: Build web app
+        run: |
+          npm run build
+
+      # 6. حذف iOS القديم بالكامل
+      - name: Clean old iOS project
+        run: |
+          rm -rf ios
+
+      # 7. إنشاء مشروع iOS جديد
       - name: Add iOS platform
         run: |
-          if [ ! -d "ios" ]; then
-            npx cap add ios
+          npx cap add ios
+
+      # 8. التأكد من وجود Podfile
+      - name: Check Podfile
+        run: |
+          if [ ! -f "ios/App/Podfile" ]; then
+            echo "Podfile not found. Creating Podfile..."
+
+            cat > ios/App/Podfile <<'EOF'
+          require_relative '../../node_modules/@capacitor/ios/scripts/pods_helpers'
+
+          platform :ios, '15.0'
+
+          use_frameworks!
+
+          install! 'cocoapods',
+            :disable_input_output_paths => true
+
+          def capacitor_pods
+            pod 'Capacitor', :path => '../../node_modules/@capacitor'
+            pod 'CapacitorCordova', :path => '../../node_modules/@capacitor'
+          end
+
+          target 'App' do
+            capacitor_pods
+          end
+
+          post_install do |installer|
+            capacitor_pods
+          end
+          EOF
           fi
 
-      - name: Sync Capacitor
-        run: npx cap sync ios
+          echo "Podfile:"
+          cat ios/App/Podfile
 
+      # 9. تثبيت CocoaPods
+      - name: Install CocoaPods
+        run: |
+          cd ios/App
+          pod install --repo-update
+
+      # 10. مزامنة Capacitor
+      - name: Sync Capacitor
+        run: |
+          npx cap sync ios
+
+      # 11. تثبيت CocoaPods مرة ثانية بعد المزامنة
+      - name: Update Pods
+        run: |
+          cd ios/App
+          pod install --repo-update
+
+      # 12. بناء تطبيق iOS بدون توقيع
       - name: Build unsigned iOS app
         run: |
           cd ios/App
+
           xcodebuild \
             -workspace App.xcworkspace \
             -scheme App \
             -configuration Release \
             -sdk iphoneos \
-            -destination generic/platform=iOS \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CONFIGURATION_BUILD_DIR="$RUNNER_TEMP/ios-build" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
             build
 
-      - name: Find build output
+      # 13. البحث عن App
+      - name: Find iOS app
         run: |
-          find ios -type f \( -name "*.app" -o -name "*.ipa" \) | head -50
+          echo "Searching for App.app..."
+
+          find "$RUNNER_TEMP" \
+            -type d \
+            -name "App.app" \
+            -print
+
+      # 14. إنشاء IPA غير موقع
+      - name: Create unsigned IPA
+        run: |
+          set -e
+
+          APP_PATH=$(find "$RUNNER_TEMP/ios-build" -type d -name "App.app" -print -quit)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: App.app was not found!"
+            exit 1
+          fi
+
+          echo "Found:"
+          echo "$APP_PATH"
+
+          rm -rf "$RUNNER_TEMP/Payload"
+          mkdir -p "$RUNNER_TEMP/Payload"
+
+          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/App.app"
+
+          cd "$RUNNER_TEMP"
+
+          zip -r NoorIslam-unsigned.ipa Payload
+
+          echo "IPA created:"
+          ls -lh NoorIslam-unsigned.ipa
+
+      # 15. رفع IPA كـ Artifact
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoorIslam-iOS-Unsigned
+          path: ${{ runner.temp }}/NoorIslam-unsigned.ipa
+          if-no-files-found: error
+
+      # 16. رفع ملف App أيضًا
+      - name: Upload App
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoorIslam-iOS-App
+          path: ${{ runner.temp }}/ios-build/App.app
+          if-no-files-found: error
